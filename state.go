@@ -232,44 +232,58 @@ func (s *cachePluginState) pruneLocked() {
 
 // claimUsage finds and removes the pending record best matching rc.
 //
-// Matching rules (deliberately conservative on identity, liberal on timing):
-//   - model must equal rc.model when both sides are set
-//   - session must equal when both sides are set
-//   - apiKey is a score bonus only (UsageRecord.APIKey may be hashed)
-//   - an exact InputTokens match is the dominant score term
-//   - records with OutputTokens>0 (terminal) are preferred
+// Matching rules:
+//   - model must match rc.model or rc.requested when both sides are set
+//     (UsageRecord.Alias may carry the client-facing name instead)
+//   - session/apiKey are score bonuses only — CPA derives its own session
+//     and may hash API keys, so inequality means "unknown", not "different"
+//   - input matching accepts both conventions: Detail.InputTokens may be
+//     total input (cached included) or the uncached remainder
+//   - at least one input-convention match is required — refuses to attach
+//     a plausibly unrelated record
 func (s *cachePluginState) claimUsage(rc *requestCtx, wantInput int64) *pluginapi.UsageRecord {
 	best := -1
 	bestScore := int64(-1)
 	now := time.Now()
 	for i := range s.pending {
 		p := &s.pending[i]
-		if rc.model != "" && p.rec.Model != "" && p.rec.Model != rc.model {
-			continue
-		}
-		if rc.sessionID != "" && p.rec.SessionID != "" && p.rec.SessionID != rc.sessionID {
+		d := &p.rec.Detail
+		// model: accept match against normalized model, requested model, or alias
+		if p.rec.Model != "" && rc.model != "" &&
+			p.rec.Model != rc.model && p.rec.Model != rc.requested &&
+			p.rec.Alias != rc.model && p.rec.Alias != rc.requested {
 			continue
 		}
 		var score int64
-		if wantInput > 0 && p.rec.Detail.InputTokens == wantInput {
-			score += 100
-		} else if wantInput > 0 && p.rec.Detail.InputTokens > 0 {
-			diff := p.rec.Detail.InputTokens - wantInput
-			if diff < 0 {
-				diff = -diff
+		if wantInput > 0 && d.InputTokens > 0 {
+			switch {
+			case closeEnough(d.InputTokens, wantInput):
+				// same convention on both sides
+				score += 100
+			case closeEnough(d.InputTokens-d.CacheReadTokens-d.CacheCreationTokens, wantInput):
+				// Detail.Input is total, want is uncached
+				score += 90
+			case closeEnough(d.InputTokens+d.CacheReadTokens+d.CacheCreationTokens, wantInput):
+				// Detail.Input is uncached, want is total
+				score += 90
 			}
-			if diff <= 64 {
-				score += 60
-			}
+		}
+		if score == 0 {
+			continue // require an input match — never attach blind
 		}
 		if rc.apiKey != "" && p.rec.APIKey != "" && p.rec.APIKey == rc.apiKey {
 			score += 30
 		}
-		if p.rec.Detail.OutputTokens > 0 {
+		if rc.sessionID != "" && p.rec.SessionID != "" && p.rec.SessionID == rc.sessionID {
+			score += 30
+		}
+		if p.rec.Model == rc.model {
+			score += 10
+		}
+		if d.OutputTokens > 0 {
 			score += 20
 		}
-		age := now.Sub(p.arrivedAt)
-		switch {
+		switch age := now.Sub(p.arrivedAt); {
 		case age < 5*time.Second:
 			score += 10
 		case age < 30*time.Second:
@@ -280,14 +294,20 @@ func (s *cachePluginState) claimUsage(rc *requestCtx, wantInput int64) *pluginap
 			best = i
 		}
 	}
-	// Require at least a fresh record or an input match — avoids attaching a
-	// completely unrelated usage record when nothing plausible exists.
-	if best < 0 || bestScore < 15 {
+	if best < 0 {
 		return nil
 	}
 	rec := s.pending[best].rec
 	s.pending = append(s.pending[:best], s.pending[best+1:]...)
 	return &rec
+}
+
+func closeEnough(a, b int64) bool {
+	diff := a - b
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= 64
 }
 
 // waitUsage polls pending until a match shows up or the deadline passes.
@@ -508,9 +528,11 @@ func patchUsageObject(usageObj map[string]any, rec *pluginapi.UsageRecord, cfg c
 	if totalIn <= 0 {
 		totalIn = num(usageObj["input_tokens"])
 	}
-	uncached := totalIn - read - create
-	if uncached < 0 {
-		uncached = 0
+	// Detail.InputTokens may be total (cached included) or already uncached.
+	// If it can't cover the cached portion, treat it as the uncached figure.
+	uncached := totalIn
+	if totalIn > read+create {
+		uncached = totalIn - read - create
 	}
 	usageObj["cache_read_input_tokens"] = read
 	usageObj["cache_creation_input_tokens"] = create
@@ -602,7 +624,26 @@ func (s *cachePluginState) handleManagement(req *pluginapi.ManagementRequest) pl
 		"pending_usage":    len(s.pending),
 		"open_requests":    len(s.requests),
 	}
+	// pending sample for debugging correlation (truncated, no secrets)
+	pendingSample := make([]map[string]any, 0, 20)
+	for i, p := range s.pending {
+		if i >= 20 {
+			break
+		}
+		key := p.rec.APIKey
+		if len(key) > 8 {
+			key = "…" + key[len(key)-6:]
+		}
+		pendingSample = append(pendingSample, map[string]any{
+			"model": p.rec.Model, "alias": p.rec.Alias,
+			"input": p.rec.Detail.InputTokens, "output": p.rec.Detail.OutputTokens,
+			"read": p.rec.Detail.CacheReadTokens, "create": p.rec.Detail.CacheCreationTokens,
+			"api_key": key, "session": p.rec.SessionID,
+			"age_ms": time.Since(p.arrivedAt).Milliseconds(),
+		})
+	}
 	s.mu.Unlock()
+	stats["pending_sample"] = pendingSample
 	s.recentMu.Lock()
 	recent := append([]recentInject(nil), s.recent...)
 	s.recentMu.Unlock()
