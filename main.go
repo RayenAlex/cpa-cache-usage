@@ -11,7 +11,7 @@ import (
 )
 
 const pluginName = "cpa-cache-usage"
-const pluginVersion = "0.1.0"
+const pluginVersion = "0.1.1"
 
 // config controls which responses get cache-usage injection and how the plugin
 // correlates intercepted chunks with usage.handle records.

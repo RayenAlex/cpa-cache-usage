@@ -73,7 +73,6 @@ The plugin exposes a status route at:
 
 ```
 GET /v0/management/cache-usage/status
-GET /v0/resource/plugins/cpa-cache-usage/status
 ```
 
 `stats.chunks_seen` > 0 confirms the stream interceptor is active;

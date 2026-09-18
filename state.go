@@ -584,10 +584,7 @@ func (s *cachePluginState) miss(requestID string) {
 func managementRegistration() map[string]any {
 	return map[string]any{
 		"routes": []map[string]any{
-			{"method": "GET", "path": "cache-usage/status", "menu": "Cache Usage", "description": "cache-usage plugin injection status"},
-		},
-		"resources": []map[string]any{
-			{"path": "status", "menu": "Cache Usage", "description": "cache-usage plugin injection status"},
+			{"method": "GET", "path": "cache-usage/status", "description": "cache-usage plugin injection status"},
 		},
 	}
 }
