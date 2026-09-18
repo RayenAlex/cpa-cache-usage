@@ -20,13 +20,7 @@
                 "goos": "linux",
                 "goarch": "amd64",
                 "url": "https://github.com/rayenalex/cpa-cache-usage/releases/download/v0.1.0/cpa-cache-usage_0.1.0_linux_amd64.zip",
-                "sha256": "REPLACE_WITH_ZIP_SHA256"
-            },
-            {
-                "goos": "linux",
-                "goarch": "arm64",
-                "url": "https://github.com/rayenalex/cpa-cache-usage/releases/download/v0.1.0/cpa-cache-usage_0.1.0_linux_arm64.zip",
-                "sha256": "REPLACE_WITH_ZIP_SHA256"
+                "sha256": "f50706f794c44bd87b1908208dafefba2cc744bd5681414ab3c755e79b4e6d2f"
             }
         ]
     }
